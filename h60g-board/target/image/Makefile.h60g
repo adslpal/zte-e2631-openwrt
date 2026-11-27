@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# H60G additions. apply-board.sh below makes the base target/linux/sanechips/
+# image/Makefile include this file. Modelled on the E2631 Makefile so the
+# ZX279128S kernel/uImage/dtb packaging chain is identical.
+#
+# NOTE: no factory.bin here -- H60G's stock upgrade format is unknown. We build
+# sysupgrade.bin only, and flash it by raw NAND write into the "rootfs"
+# partition from U-Boot/TFTP. Once the vendor upgrade format is reverse-
+# engineered, a Build/h60g-factory can be added like E2631's.
+
+define Device/zte_h60g
+  DEVICE_VENDOR := ZTE
+  DEVICE_MODEL := H60G
+  DEVICE_DTS := zx279128s-zte-h60g
+  DEVICE_DTS_DIR := $(TOPDIR)/target/linux/sanechips/dts
+  # No A/B slot header on the stock ONU: plain uImage, rootfs appended.
+  # KERNEL_SIZE must be changed to match the real rootfs partition in the DTS.
+  KERNEL_SIZE := 4096k
+  KERNEL := kernel-bin | append-dtb | uImage none | check-size $$(KERNEL_SIZE)
+  KERNEL_INITRAMFS := kernel-bin | append-dtb | uImage-ramboot
+  # Pure wired router: LuCI + PPPoE, no WiFi kmods, no mesh, no extroot.
+  DEVICE_PACKAGES := \
+	kmod-nft-offload \
+	luci luci-i18n-base-zh-cn luci-proto-ppp luci-app-ttyd ttyd \
+	luci-theme-argon luci-theme-bootstrap \
+	libustream-mbedtls
+  IMAGES := sysupgrade.bin
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+endef
+TARGET_DEVICES += zte_h60g
