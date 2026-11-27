@@ -75,7 +75,7 @@ cp "$HERE/target/base-files/etc/board.d/02_network" \
 # parallel-NAND driver is ported. Use a console-only cmdline; the first boot is
 # an initramfs loaded over TFTP (root comes from the initramfs itself).
 CFG="$TREE/target/linux/sanechips/config-6.18"
-MARK='# H60G: rev4 -- ATAGS->DTB compat + fixed-address earlycon + DEBUG_LL (apply-h60g.sh)'
+MARK='# H60G: rev5 -- ATAGS->DTB compat (EXTEND pinned) + fixed-address earlycon (apply-h60g.sh)'
 # ---------------------------------------------------------------------------
 # REV4 (2026-11-27) -- why the kernel was TOTALLY silent after "Starting kernel"
 #
@@ -89,16 +89,18 @@ MARK='# H60G: rev4 -- ATAGS->DTB compat + fixed-address earlycon + DEBUG_LL (app
 # Three independent fixes, so that ONE boot tells us exactly where we are:
 #   1. ARM_ATAG_DTB_COMPAT  - merge the U-Boot ATAGS into the appended DTB,
 #                             so the DTB we ship is always the one used.
+#                             (REV5: its CMDLINE_EXTEND sub-choice MUST be
+#                             pinned or syncconfig fails -- see below.)
 #   2. earlycon=pl011,0x94404000
 #                           - bare "earlycon" needs DT stdout-path; the
 #                             explicit MMIO form works with no DTB at all.
 #                             UART is serial@94404000 (arm,pl011).
-#   3. DEBUG_LL + DEBUG_UNCOMPRESS
-#                           - makes the zImage self-decompressor print
-#                             "Uncompressing Linux... done, booting the
-#                             kernel." So: silence => we never even reached
-#                             the decompressor; text => problem is in the
-#                             kernel proper and earlycon will show it.
+#   3. (removed in REV5) DEBUG_LL/DEBUG_UNCOMPRESS
+#                           - impossible here: DEBUG_UNCOMPRESS depends on
+#                             !ARCH_MULTIPLATFORM and this target IS
+#                             multiplatform. Use the raw-Image test instead
+#                             (boot-test2.py --image raw) to tell "decompressor
+#                             broken" from "kernel dies early".
 # ---------------------------------------------------------------------------
 sed -i -e "\|^$MARK\$|d" \
        -e '/^CONFIG_CMDLINE=/d' \
@@ -107,12 +109,19 @@ sed -i -e "\|^$MARK\$|d" \
        -e '/^CONFIG_SERIAL_EARLYCON=/d' \
        -e '/^CONFIG_SERIAL_AMBA_PL011_EARLYCON=/d' \
        -e '/^CONFIG_ARM_ATAG_DTB_COMPAT=/d' \
-       -e '/^CONFIG_DEBUG_LL=/d' \
-       -e '/^CONFIG_DEBUG_LL_INCLUDE=/d' \
-       -e '/^CONFIG_DEBUG_UART_/d' \
-       -e '/^CONFIG_DEBUG_UNCOMPRESS=/d' \
+       -e '/^CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_/d' \
        -e '/^CONFIG_EARLY_PRINTK=/d' \
        "$CFG"
+# NOTE (REV5): CONFIG_DEBUG_LL / DEBUG_UNCOMPRESS are NOT set here on purpose.
+#   arch/arm/Kconfig.debug has: config DEBUG_UNCOMPRESS -> "depends on
+#   !ARCH_MULTIPLATFORM", and this target is CONFIG_ARCH_MULTIPLATFORM=y
+#   (sanechips/config-6.18 line 6). The decompressor can therefore never print
+#   on this kernel -- asking for it only gets silently dropped by kconfig.
+#
+# NOTE (REV5): ARM_ATAG_DTB_COMPAT opens a NEW choice
+#   ARM_ATAG_DTB_COMPAT_CMDLINE_{FROM_BOOTLOADER,EXTEND}. If neither is pinned,
+#   the non-interactive `syncconfig` step stops at "choice[1-2?]:" and the whole
+#   target/linux build dies with Error 1. It must always be set explicitly.
 printf '%s\n' "$MARK" \
 	'CONFIG_CMDLINE_BOOL=y' \
 	'CONFIG_CMDLINE="console=ttyAMA0,115200n8 earlycon=pl011,0x94404000 keep_bootcon"' \
@@ -120,15 +129,8 @@ printf '%s\n' "$MARK" \
 	'CONFIG_SERIAL_EARLYCON=y' \
 	'CONFIG_SERIAL_AMBA_PL011_EARLYCON=y' \
 	'CONFIG_ARM_ATAG_DTB_COMPAT=y' \
-	'CONFIG_EARLY_PRINTK=y' \
-	'CONFIG_DEBUG_LL=y' \
-	'CONFIG_DEBUG_LL_UART_PL01X=y' \
-	'CONFIG_DEBUG_UART_PL01X=y' \
-	'CONFIG_DEBUG_LL_INCLUDE="debug/pl01x.S"' \
-	'CONFIG_DEBUG_UART_PHYS=0x94404000' \
-	'CONFIG_DEBUG_UART_VIRT=0xfee04000' \
-	'CONFIG_DEBUG_UNCOMPRESS=y' \
-	'CONFIG_UNCOMPRESS_INCLUDE="debug/uncompress.h"' >> "$CFG"
+	'CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_EXTEND=y' \
+	'CONFIG_EARLY_PRINTK=y' >> "$CFG"
 echo "cmdline: console-only + earlycon=pl011,0x94404000 + ATAG_DTB_COMPAT + DEBUG_LL"
 echo "kernel is zImage+appended-DTB, ih_load=0x48008000 (AUTO_ZRELADDR unpacks there)"
 
