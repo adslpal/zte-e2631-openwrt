@@ -76,20 +76,17 @@
 	/* [MEASURED] 256 MiB. U-Boot also prints 0x10000000. */
 	memory@40000000 {
 		device_type = "memory";
-		reg = <0x40000000 0x10000000>;	/* 256 MiB */
+		reg = <0x40000000 0x10000000>;	/* 256 MiB: 0x40000000..0x50000000 */
 	};
 
-	/* Packet-processor reserve, kept from the H3600 baseline. */
-	reserved-memory {
-		#address-cells = <1>;
-		#size-cells = <1>;
-		ranges;
-
-		pp@5da00000 {
-			reg = <0x5da00000 0x2600000>;
-			no-map;
-		};
-	};
+	/*
+	 * REVISION 3 -- removed reserved-memory pp@5da00000.
+	 * That node was copied from the H3600 baseline but 0x5da00000 (1568 MiB)
+	 * is FAR outside this board's 256 MiB RAM (0x40000000..0x50000000).
+	 * The E2631 board that boots successfully has NO reserved-memory node.
+	 * memblock_reserve() of an out-of-range region can panic the kernel in
+	 * early boot -> "Starting kernel ..." then total silence. Removed.
+	 */
 
 	/*
 	 * TODO(H60G) #2/#3: LED and reset GPIOs differ from E2631/H3600.
