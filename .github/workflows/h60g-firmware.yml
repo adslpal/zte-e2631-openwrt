@@ -83,7 +83,10 @@ jobs:
           BINDIR="$E2631_TREE/bin/targets/sanechips/generic"
           mkdir -p release
           found=0
-          for f in "$BINDIR"/*initramfs-kernel.bin "$BINDIR"/*initramfs*.bin; do
+          # H60G (sanechips) emits the initramfs image as *.uImage, not
+          # *-kernel.bin. Accept both so the collect step never misses it.
+          for f in "$BINDIR"/*initramfs-kernel.bin "$BINDIR"/*initramfs*.bin \
+                   "$BINDIR"/*initramfs*.uImage "$BINDIR"/*initramfs*.itb; do
             [ -f "$f" ] || continue
             cp -v "$f" release/h60g-initramfs-kernel.bin; found=1; break
           done
