@@ -75,7 +75,7 @@ cp "$HERE/target/base-files/etc/board.d/02_network" \
 # parallel-NAND driver is ported. Use a console-only cmdline; the first boot is
 # an initramfs loaded over TFTP (root comes from the initramfs itself).
 CFG="$TREE/target/linux/sanechips/config-6.18"
-MARK='# H60G: rev5 -- ATAGS->DTB compat (EXTEND pinned) + fixed-address earlycon (apply-h60g.sh)'
+MARK='# H60G: rev6 -- earlyprintk (DEBUG_LL/pl01x) + ATAGS->DTB compat (EXTEND) + earlycon (apply-h60g.sh)'
 # ---------------------------------------------------------------------------
 # REV4 (2026-11-27) -- why the kernel was TOTALLY silent after "Starting kernel"
 #
@@ -111,12 +111,26 @@ sed -i -e "\|^$MARK\$|d" \
        -e '/^CONFIG_ARM_ATAG_DTB_COMPAT=/d' \
        -e '/^CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_/d' \
        -e '/^CONFIG_EARLY_PRINTK=/d' \
+       -e '/^CONFIG_DEBUG_KERNEL=/d' \
+       -e '/^CONFIG_DEBUG_LL=/d' \
+       -e '/^CONFIG_DEBUG_LL_UART_PL01X=/d' \
+       -e '/^CONFIG_DEBUG_UART_PHYS=/d' \
+       -e '/^CONFIG_DEBUG_UART_VIRT=/d' \
        "$CFG"
-# NOTE (REV5): CONFIG_DEBUG_LL / DEBUG_UNCOMPRESS are NOT set here on purpose.
-#   arch/arm/Kconfig.debug has: config DEBUG_UNCOMPRESS -> "depends on
+# NOTE (REV5): CONFIG_DEBUG_UNCOMPRESS can never be enabled here --
+#   arch/arm/Kconfig.debug: "config DEBUG_UNCOMPRESS depends on
 #   !ARCH_MULTIPLATFORM", and this target is CONFIG_ARCH_MULTIPLATFORM=y
-#   (sanechips/config-6.18 line 6). The decompressor can therefore never print
-#   on this kernel -- asking for it only gets silently dropped by kconfig.
+#   (sanechips/config-6.18 line 6). The decompressor stays silent by design.
+#
+# NOTE (REV6): earlyprintk IS possible and is the only channel that can print
+#   before earlycon exists. Two traps:
+#     * DEBUG_LL needs DEBUG_KERNEL=y, otherwise it is silently dropped.
+#     * the user-visible choice entry is DEBUG_LL_UART_PL01X; DEBUG_UART_PL01X
+#       is only the hidden symbol that it selects. Writing the hidden name does
+#       nothing.
+#   With earlyprintk, text appears from the very first printk in start_kernel,
+#   and head.S error paths ("Error: unrecognized/unsupported machine ID") also
+#   print -- exactly what we need if the kernel dies before console_init.
 #
 # NOTE (REV5): ARM_ATAG_DTB_COMPAT opens a NEW choice
 #   ARM_ATAG_DTB_COMPAT_CMDLINE_{FROM_BOOTLOADER,EXTEND}. If neither is pinned,
@@ -124,14 +138,19 @@ sed -i -e "\|^$MARK\$|d" \
 #   target/linux build dies with Error 1. It must always be set explicitly.
 printf '%s\n' "$MARK" \
 	'CONFIG_CMDLINE_BOOL=y' \
-	'CONFIG_CMDLINE="console=ttyAMA0,115200n8 earlycon=pl011,0x94404000 keep_bootcon"' \
+	'CONFIG_CMDLINE="console=ttyAMA0,115200n8 earlycon=pl011,0x94404000 earlyprintk keep_bootcon"' \
 	'CONFIG_CMDLINE_FORCE=y' \
 	'CONFIG_SERIAL_EARLYCON=y' \
 	'CONFIG_SERIAL_AMBA_PL011_EARLYCON=y' \
 	'CONFIG_ARM_ATAG_DTB_COMPAT=y' \
 	'CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_EXTEND=y' \
+	'CONFIG_DEBUG_KERNEL=y' \
+	'CONFIG_DEBUG_LL=y' \
+	'CONFIG_DEBUG_LL_UART_PL01X=y' \
+	'CONFIG_DEBUG_UART_PHYS=0x94404000' \
+	'CONFIG_DEBUG_UART_VIRT=0xfee04000' \
 	'CONFIG_EARLY_PRINTK=y' >> "$CFG"
-echo "cmdline: console-only + earlycon=pl011,0x94404000 + ATAG_DTB_COMPAT + DEBUG_LL"
+echo "cmdline: console + earlycon=pl011,0x94404000 + earlyprintk (DEBUG_LL/pl01x)"
 echo "kernel is zImage+appended-DTB, ih_load=0x48008000 (AUTO_ZRELADDR unpacks there)"
 
 # --- 5. select only the H60G profile in seed config -------------------------
