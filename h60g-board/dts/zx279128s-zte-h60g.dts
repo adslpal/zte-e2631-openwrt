@@ -129,7 +129,7 @@
  * port as WAN. PHY addresses 0xa..0xd are inherited from E2631 and UNVERIFIED.
  * Confirm on first boot:
  *   ls /sys/bus/mdio_bus/devices      -> expect 0-000a .. 0-000d
- *   cat /sys/class/net/eth*/phydev
+ *   cat /sys/class/net/eth?/phydev    (note: '?' avoids a DTS comment-close)
  * If they differ, adjust the `reg` values in &mdio below.
  */
 &gmac {
