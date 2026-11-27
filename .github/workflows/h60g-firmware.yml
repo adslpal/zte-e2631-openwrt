@@ -1,0 +1,122 @@
+# GitHub Actions workflow for building the H60G OpenWrt image in the cloud.
+#
+# HOW TO USE:
+#   1. Fork https://github.com/Zlion-Y/zte-e2631-openwrt to your own account.
+#   2. In your fork, create this file at .github/workflows/h60g-firmware.yml.
+#   3. Copy the H60G board files into your fork:
+#        dts/zx279128s-zte-h60g.dts          -> <fork>/board/vendor-dts/  (optional mirror)
+#        The workflow below injects them from a separate repo/branch -- see
+#        H60G_BOARD_REPO env. Simpler: commit the three files into your fork:
+#          overlay/target/linux/sanechips/dts/zx279128s-zte-h60g.dts
+#          overlay/target/linux/sanechips/image/Makefile.h60g
+#          (apply-h60g.sh logic is inlined below as a patch step)
+#      Easiest path: follow BUILD-H60G.md "GitHub Actions" section which has
+#      the exact cp commands.
+#   4. Actions tab -> "Build H60G firmware" -> Run workflow.
+#   5. Download the artifact (h60g-initramfs-kernel.bin) when the run finishes.
+#
+# This workflow does NOT flash anything. It only compiles.
+name: Build H60G firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h60g-firmware-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  E2631_TREE: ${{ github.workspace }}/../openwrt
+  E2631_OUT: ${{ github.workspace }}/../out
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib gettext git libncurses-dev libssl-dev python3 \
+            python3-setuptools rsync swig unzip zlib1g-dev file wget curl \
+            busybox libelf-dev xsltproc
+
+      - name: Bootstrap pinned OpenWrt base + E2631 overlay
+        # This gives us all the shared ZX279128S SoC drivers / 6.18 patches.
+        run: make bootstrap
+
+      - name: Inject H60G board layer
+        # The board files are expected to be committed in this fork at h60g-board/.
+        # See BUILD-H60G.md for the exact layout. This step calls the same
+        # apply-h60g.sh used for local builds, so both paths stay identical.
+        run: |
+          set -euo pipefail
+          test -f h60g-board/apply-h60g.sh || { echo "h60g-board/ not committed"; exit 1; }
+          bash h60g-board/apply-h60g.sh "$E2631_TREE"
+
+      - name: Select H60G device and force initramfs
+        run: |
+          set -euo pipefail
+          CFG="$E2631_TREE/.config"
+          sed -i 's/^CONFIG_TARGET_DEVICE_sanechips_generic_DEVICE_zte_zxhn-e2631=.*/CONFIG_TARGET_DEVICE_sanechips_generic_DEVICE_zte_h60g=y/' "$CFG"
+          sed -i '/^CONFIG_TARGET_DEVICE_sanechips_generic_DEVICE_zte_zxhn-e2631=/d' "$CFG"
+          grep -q '^CONFIG_TARGET_DEVICE_sanechips_generic_DEVICE_zte_h60g=y' "$CFG" || \
+            echo 'CONFIG_TARGET_DEVICE_sanechips_generic_DEVICE_zte_h60g=y' >> "$CFG"
+          grep -q '^CONFIG_TARGET_ROOTFS_INITRAMFS=y' "$CFG" || \
+            echo 'CONFIG_TARGET_ROOTFS_INITRAMFS=y' >> "$CFG"
+          ( cd "$E2631_TREE" && make defconfig )
+
+      - name: Build (make world)
+        run: |
+          set -o pipefail
+          ( cd "$E2631_TREE" && make -j"$(nproc)" world V=s ) 2>&1 | tee world.log
+
+      - name: Collect images
+        run: |
+          set -euo pipefail
+          BINDIR="$E2631_TREE/bin/targets/sanechips/generic"
+          mkdir -p release
+          found=0
+          for f in "$BINDIR"/*initramfs-kernel.bin "$BINDIR"/*initramfs*.bin; do
+            [ -f "$f" ] || continue
+            cp -v "$f" release/h60g-initramfs-kernel.bin; found=1; break
+          done
+          for f in "$BINDIR"/*sysupgrade*.bin; do
+            [ -f "$f" ] || continue
+            cp -v "$f" release/h60g-sysupgrade.bin; break
+          done
+          cp -v "$BINDIR"/zx279128s-zte-h60g.dtb release/h60g.dtb 2>/dev/null || true
+          [ "$found" -eq 1 ] || { echo "no initramfs image!"; ls -la "$BINDIR"; exit 1; }
+          {
+            echo "H60G experimental build"
+            echo "Kit commit: $GITHUB_SHA"
+            echo "Base commit: $(git -C "$E2631_TREE" rev-parse HEAD)"
+            echo "Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "Hardware tested: NO -- RAM-boot test required first"
+            echo "WARN: H60G has PARALLEL NAND; mainline 6.18 has no driver."
+            echo "      initramfs boots from RAM; sysupgrade cannot persist yet."
+          } > release/SOURCE-INFO.txt
+          ( cd release && sha256sum *.bin SOURCE-INFO.txt > SHA256SUMS )
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h60g-firmware-${{ github.run_id }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h60g-buildlog-${{ github.run_id }}
+          path: world.log
+          if-no-files-found: ignore
+          retention-days: 14
