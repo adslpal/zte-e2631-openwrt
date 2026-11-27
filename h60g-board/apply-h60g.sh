@@ -75,22 +75,62 @@ cp "$HERE/target/base-files/etc/board.d/02_network" \
 # parallel-NAND driver is ported. Use a console-only cmdline; the first boot is
 # an initramfs loaded over TFTP (root comes from the initramfs itself).
 CFG="$TREE/target/linux/sanechips/config-6.18"
-MARK='# H60G: rev3 -- no forced root; initramfs-over-TFTP; EARLYCON enabled for early boot visibility (apply-h60g.sh)'
-# REV3: enable EARLYCON so kernel prints before the PL011 console driver binds.
-# Without it, `earlycon` in cmdline is ignored and a hang before console init
-# looks like total silence. PL011 earlycon needs these options.
+MARK='# H60G: rev4 -- ATAGS->DTB compat + fixed-address earlycon + DEBUG_LL (apply-h60g.sh)'
+# ---------------------------------------------------------------------------
+# REV4 (2026-11-27) -- why the kernel was TOTALLY silent after "Starting kernel"
+#
+# U-Boot on this box is ZTE-customised and passes legacy ATAGS in r2, not a
+# DTB. With CONFIG_ARM_ATAG_DTB_COMPAT=n the appended DTB is only a fallback
+# and, because a "valid" ATAGS pointer is present, the kernel ends up with
+# ATAGS. A multiplatform DT-only kernel then has no machine_desc, no
+# /chosen/stdout-path and no earlycon target => it dies before any console
+# exists, which is indistinguishable from a hang.
+#
+# Three independent fixes, so that ONE boot tells us exactly where we are:
+#   1. ARM_ATAG_DTB_COMPAT  - merge the U-Boot ATAGS into the appended DTB,
+#                             so the DTB we ship is always the one used.
+#   2. earlycon=pl011,0x94404000
+#                           - bare "earlycon" needs DT stdout-path; the
+#                             explicit MMIO form works with no DTB at all.
+#                             UART is serial@94404000 (arm,pl011).
+#   3. DEBUG_LL + DEBUG_UNCOMPRESS
+#                           - makes the zImage self-decompressor print
+#                             "Uncompressing Linux... done, booting the
+#                             kernel." So: silence => we never even reached
+#                             the decompressor; text => problem is in the
+#                             kernel proper and earlycon will show it.
+# ---------------------------------------------------------------------------
 sed -i -e "\|^$MARK\$|d" \
        -e '/^CONFIG_CMDLINE=/d' \
+       -e '/^CONFIG_CMDLINE_BOOL=/d' \
+       -e '/^CONFIG_CMDLINE_FORCE=/d' \
        -e '/^CONFIG_SERIAL_EARLYCON=/d' \
        -e '/^CONFIG_SERIAL_AMBA_PL011_EARLYCON=/d' \
+       -e '/^CONFIG_ARM_ATAG_DTB_COMPAT=/d' \
+       -e '/^CONFIG_DEBUG_LL=/d' \
+       -e '/^CONFIG_DEBUG_LL_INCLUDE=/d' \
+       -e '/^CONFIG_DEBUG_UART_/d' \
+       -e '/^CONFIG_DEBUG_UNCOMPRESS=/d' \
+       -e '/^CONFIG_EARLY_PRINTK=/d' \
        "$CFG"
 printf '%s\n' "$MARK" \
 	'CONFIG_CMDLINE_BOOL=y' \
-	'CONFIG_CMDLINE="console=ttyAMA0,115200n8 earlycon"' \
+	'CONFIG_CMDLINE="console=ttyAMA0,115200n8 earlycon=pl011,0x94404000 keep_bootcon"' \
 	'CONFIG_CMDLINE_FORCE=y' \
 	'CONFIG_SERIAL_EARLYCON=y' \
-	'CONFIG_SERIAL_AMBA_PL011_EARLYCON=y' >> "$CFG"
-echo "cmdline: console-only + EARLYCON (no forced root; parallel NAND has no mainline driver yet)"
+	'CONFIG_SERIAL_AMBA_PL011_EARLYCON=y' \
+	'CONFIG_ARM_ATAG_DTB_COMPAT=y' \
+	'CONFIG_EARLY_PRINTK=y' \
+	'CONFIG_DEBUG_LL=y' \
+	'CONFIG_DEBUG_LL_UART_PL01X=y' \
+	'CONFIG_DEBUG_UART_PL01X=y' \
+	'CONFIG_DEBUG_LL_INCLUDE="debug/pl01x.S"' \
+	'CONFIG_DEBUG_UART_PHYS=0x94404000' \
+	'CONFIG_DEBUG_UART_VIRT=0xfee04000' \
+	'CONFIG_DEBUG_UNCOMPRESS=y' \
+	'CONFIG_UNCOMPRESS_INCLUDE="debug/uncompress.h"' >> "$CFG"
+echo "cmdline: console-only + earlycon=pl011,0x94404000 + ATAG_DTB_COMPAT + DEBUG_LL"
+echo "kernel is zImage+appended-DTB, ih_load=0x48008000 (AUTO_ZRELADDR unpacks there)"
 
 # --- 5. select only the H60G profile in seed config -------------------------
 # Leave E2631 default intact; user selects zte_h60g in menuconfig. We only make
