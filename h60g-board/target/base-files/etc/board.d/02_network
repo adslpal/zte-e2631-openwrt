@@ -1,0 +1,23 @@
+#!/bin/sh
+# H60G network map. The kernel exposes eth0..eth3 (gmac_port0..3).
+# DTS labels: port0=lan3, port1=lan2, port2=lan1, port3=wan.
+# Adjust the strings here if the physical port order differs on your unit.
+
+. /lib/functions/uci-defaults.sh
+
+board_config_update
+
+board=$(board_name)
+
+case "$board" in
+zte,h60g)
+	ucidef_set_interfaces_lan_wan "lan1 lan2 lan3" "wan"
+	;;
+*)
+	ucidef_set_interfaces_lan_wan "lan1 lan2" "wan"
+	;;
+esac
+
+board_config_flush
+
+exit 0
