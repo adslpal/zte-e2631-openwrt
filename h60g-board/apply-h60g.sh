@@ -75,13 +75,22 @@ cp "$HERE/target/base-files/etc/board.d/02_network" \
 # parallel-NAND driver is ported. Use a console-only cmdline; the first boot is
 # an initramfs loaded over TFTP (root comes from the initramfs itself).
 CFG="$TREE/target/linux/sanechips/config-6.18"
-MARK='# H60G: rev2 -- no forced root; initramfs-over-TFTP until denali NAND ported (apply-h60g.sh)'
-sed -i -e "\|^$MARK\$|d" -e '/^CONFIG_CMDLINE=/d' "$CFG"
+MARK='# H60G: rev3 -- no forced root; initramfs-over-TFTP; EARLYCON enabled for early boot visibility (apply-h60g.sh)'
+# REV3: enable EARLYCON so kernel prints before the PL011 console driver binds.
+# Without it, `earlycon` in cmdline is ignored and a hang before console init
+# looks like total silence. PL011 earlycon needs these options.
+sed -i -e "\|^$MARK\$|d" \
+       -e '/^CONFIG_CMDLINE=/d' \
+       -e '/^CONFIG_SERIAL_EARLYCON=/d' \
+       -e '/^CONFIG_SERIAL_AMBA_PL011_EARLYCON=/d' \
+       "$CFG"
 printf '%s\n' "$MARK" \
 	'CONFIG_CMDLINE_BOOL=y' \
 	'CONFIG_CMDLINE="console=ttyAMA0,115200n8 earlycon"' \
-	'CONFIG_CMDLINE_FORCE=y' >> "$CFG"
-echo "cmdline: console-only (no forced root; parallel NAND has no mainline driver yet)"
+	'CONFIG_CMDLINE_FORCE=y' \
+	'CONFIG_SERIAL_EARLYCON=y' \
+	'CONFIG_SERIAL_AMBA_PL011_EARLYCON=y' >> "$CFG"
+echo "cmdline: console-only + EARLYCON (no forced root; parallel NAND has no mainline driver yet)"
 
 # --- 5. select only the H60G profile in seed config -------------------------
 # Leave E2631 default intact; user selects zte_h60g in menuconfig. We only make
