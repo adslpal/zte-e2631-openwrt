@@ -73,6 +73,12 @@ jobs:
           ( cd "$E2631_TREE" && make defconfig )
 
       - name: Build (make world)
+        # KCONFIG_NONINTERACTIVE makes any NEW kconfig symbol/choice take its
+        # default instead of prompting. Without it, `syncconfig` stops at
+        # "choice[1-2?]:" (stdin EOF) and the whole target/linux build dies
+        # with Error 1 -- that is exactly how REV4 failed.
+        env:
+          KCONFIG_NONINTERACTIVE: "1"
         run: |
           set -o pipefail
           ( cd "$E2631_TREE" && make -j"$(nproc)" world V=s ) 2>&1 | tee world.log
