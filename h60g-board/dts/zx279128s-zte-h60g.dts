@@ -1,0 +1,304 @@
+// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+/*
+ * ZTE/吉比特 H60G (中国移动 GPON ONU) -- board file for the
+ * Zlion-Y/zte-e2631-openwrt (Sanechips ZX279128S, Linux 6.18) tree.
+ *
+ * GOAL: run it as a PLAIN WIRED ROUTER. The PON/optical side is ignored.
+ *       Only the SoC, the integrated GbE ports and the UART are needed.
+ *
+ * ============================================================================
+ * REVISION 2 -- 2026-11-27, derived from REAL serial boot log
+ *   G:\Downloads\serial-2026-11-27-103619.txt
+ * All values below marked [MEASURED] came from that log, not from a template.
+ * ============================================================================
+ *
+ * [MEASURED] hardware facts from the boot log:
+ *   SoC      : U-Boot prints "ZX279127S@A9"; Linux DTS reports
+ *              "Machine model: ZTE ZX279128S", CPU part 0x414fc091 (A9 r1).
+ *              -> same ZX27912x family; we keep compatible = zx279128s so the
+ *                 existing mainline driver/DTS work is reused.
+ *   RAM      : 256 MiB  (U-Boot DRAM: 256 MiB, CONFIG_SYS_SDRAM_SIZE=0x10000000;
+ *              Linux "Memory: 208460K/262144K available").  TODO #5 CLOSED.
+ *   UART     : ttyAMA0, 115200n8.                          TODO (console) CLOSED.
+ *   Ethernet : GMAC SYS FS init OK; 4 FE ports (IGD.LD1.ETH1..ETH4) all present.
+ *
+ *   !! CRITICAL DIFFERENCE FROM E2631 / H3600 !!
+ *   [MEASURED] FLASH is a PARALLEL NAND, NOT SPI-NAND:
+ *       U-Boot: "Manu ID: 0x98, Chip ID: 0xda (Toshiba NAND 256MiB 3,3V 8-bit)"
+ *       Linux : "nand: Toshiba NAND 256MiB 3,3V 8-bit"
+ *               "nand: 256 MiB, SLC, erase size: 128 KiB, page size: 2048,
+ *                OOB size: 64"
+ *               "Creating 15 MTD partitions on \"denali-nand\""
+ *               "spi nand not exist!"
+ *   -> E2631/H3600 use a 128MiB SPI-NAND on &spifc (compatible "spi-nand").
+ *      H60G has NO spi-nand at all. The &spifc block at the bottom of this
+ *      file is therefore DISABLED (#if 0) and MUST NOT be used for flashing.
+ *
+ *   THE BLOCKER: the mainline 6.18 tree (patch 026 zx279128s.dtsi) defines ONLY
+ *   `spifc: spi@94406000` (SPI NAND). It has NO parallel-NAND / denali node,
+ *   and config-6.18 has CONFIG_MTD_RAW_NAND=y but no denali controller binding.
+ *   => The mainline kernel currently CANNOT see a single byte of H60G's flash.
+ *   => You can boot initramfs over TFTP and use the box as a router in RAM,
+ *      but you CANNOT persist to NAND until a parallel-NAND controller driver
+ *      + DT node is ported for this SoC. See README §"闪存阻塞" and FLASHING.md.
+ *
+ * [MEASURED] complete 15-partition table (from the same boot log) is recorded
+ *   verbatim in README.md §5 and probe-h60g.sh. Kernel1 / kernel0 are 32 MiB
+ *   each; those are the intended OpenWrt targets once NAND support exists.
+ *
+ * Things STILL unknown (need original-shell commands, see probe-h60g.sh):
+ *   - status LED GPIO                                 -> TODO(H60G) #2
+ *   - reset key GPIO                                  -> TODO(H60G) #3
+ *   - MAC cell offset in parameter-tags partition     -> TODO(H60G) #4
+ */
+
+/dts-v1/;
+
+#include "zte/zx279128s.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+
+/ {
+	model = "ZTE/吉比特 H60G";
+	compatible = "zte,h60g", "zte,zx279128s";
+
+	aliases {
+		ethernet0 = &gmac;
+		serial0 = &serial0;
+		serial1 = &serial1;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/* [MEASURED] 256 MiB. U-Boot also prints 0x10000000. */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x40000000 0x10000000>;	/* 256 MiB */
+	};
+
+	/* Packet-processor reserve, kept from the H3600 baseline. */
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		pp@5da00000 {
+			reg = <0x5da00000 0x2600000>;
+			no-map;
+		};
+	};
+
+	/*
+	 * TODO(H60G) #2/#3: LED and reset GPIOs differ from E2631/H3600.
+	 * Disabled so a first boot is not blocked by a wrong GPIO.
+	 * Get flat GPIO from the vendor shell:
+	 *   cat /proc/zte/ledkey_m/led    and   cat /proc/zte/ledkey_m/key
+	 * flat = controller*16 + line, e.g. flat 40 = gpio2 8.
+	 */
+#if 0
+	leds {
+		compatible = "gpio-leds";
+		led_status: led-status {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			gpios = <&gpio2 8 GPIO_ACTIVE_LOW>;	/* TODO(H60G) #2 */
+			default-state = "off";
+		};
+	};
+
+	keys {
+		compatible = "gpio-keys-polled";
+		poll-interval = <50>;
+		key-reset {
+			label = "reset";
+			gpios = <&gpio1 2 GPIO_ACTIVE_LOW>;	/* TODO(H60G) #3 */
+			linux,code = <KEY_RESTART>;
+			debounce-interval = <60>;
+		};
+	};
+#endif
+};
+
+/*
+ * ---- Ethernet: integrated GbE ports ---------------------------------------
+ * [MEASURED] all four electrical ports come up as IGD.LD1.ETH1..ETH4.
+ * H60G's WAN is the PON; for a plain wired router we designate one electrical
+ * port as WAN. PHY addresses 0xa..0xd are inherited from E2631 and UNVERIFIED.
+ * Confirm on first boot:
+ *   ls /sys/bus/mdio_bus/devices      -> expect 0-000a .. 0-000d
+ *   cat /sys/class/net/eth*/phydev
+ * If they differ, adjust the `reg` values in &mdio below.
+ */
+&gmac {
+	status = "okay";
+};
+
+/*
+ * REV3 FIX (2026-11-27): the original ports referenced <&macaddr_tag_1e>,
+ * an nvmem cell defined only inside the #if 0 &spifc block below. That label
+ * does not exist in the compiled DTS (no SPI-NAND on this board), so dtc
+ * fails with "label 'macaddr_tag_1e' not found / unresolved phandle".
+ *
+ * For a RAM-booted initramfs we do not need NAND-backed MAC at all. Use the
+ * REAL WAN MAC measured from the vendor OSGi log (78:C6:2B:33:A9:68) as a
+ * static property. Bytes 3..5 are incremented per port so each interface gets
+ * a unique MAC, matching the vendor's own scheme. Set the canonical MAC on
+ * the WAN port; LAN ports get +1..+3. When the parallel-NAND driver is ported
+ * this can be switched back to the nvmem cell so it survives config resets.
+ */
+&gmac_port0 {
+	label = "lan3";
+	phy-handle = <&phy10>;
+	phy-mode = "internal";
+	mac-address = [78 C6 2B 33 A9 69];	/* real MAC +1 */
+	status = "okay";
+};
+
+&gmac_port1 {
+	label = "lan2";
+	phy-handle = <&phy11>;
+	phy-mode = "internal";
+	mac-address = [78 C6 2B 33 A9 6A];	/* real MAC +2 */
+	status = "okay";
+};
+
+&gmac_port2 {
+	label = "lan1";
+	phy-handle = <&phy12>;
+	phy-mode = "internal";
+	mac-address = [78 C6 2B 33 A9 6B];	/* real MAC +3 */
+	status = "okay";
+};
+
+&gmac_port3 {
+	label = "wan";
+	phy-handle = <&phy13>;
+	phy-mode = "internal";
+	mac-address = [78 C6 2B 33 A9 68];	/* [MEASURED] real WAN MAC */
+	status = "okay";
+};
+
+/* SoC has 5 ports; H60G wires four electrical + one PON. */
+&gmac_port4 {
+	status = "disabled";
+};
+
+&mdio {
+	status = "okay";
+
+	phy10: ethernet-phy@a { reg = <10>; };
+	phy11: ethernet-phy@b { reg = <11>; };
+	phy12: ethernet-phy@c { reg = <12>; };
+	phy13: ethernet-phy@d { reg = <13>; };
+};
+
+/* ---- UART: keep both enabled so the forced console is not silent ---------- */
+&serial0 { status = "okay"; };
+&serial1 { status = "okay"; };
+
+/* ---- No WiFi on H60G: keep both PCIe controllers off --------------------- */
+&pcie0 { status = "disabled"; };
+&pcie1 { status = "disabled"; };
+
+/* USB probed only after a stable wired-router boot. */
+&usb { status = "disabled"; };
+
+/* ---- Reboot shim (topcrm is claimed early by CLK_OF_DECLARE) -------------- */
+/ {
+	soc {
+		crm1: syscon@94000000 {
+			compatible = "syscon", "simple-mfd";
+			reg = <0x94000000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			reboot {
+				compatible = "syscon-reboot";
+				offset = <0x44>;
+				mask = <0x1>;
+				value = <0x1>;
+			};
+		};
+	};
+};
+
+&l2cc {
+	zte,l2c-io-read-lock;
+};
+
+/*
+ * ============================================================================
+ * ---- FLASH: DO NOT USE &spifc ON THIS BOARD -------------------------------
+ * ============================================================================
+ * [MEASURED] "spi nand not exist!" -- H60G has a 256 MiB PARALLEL NAND on the
+ * denali controller, with these 15 partitions (verbatim from the boot log,
+ * sorted by address). The H60G root filesystem will go into kernel1 once a
+ * parallel-NAND driver exists in the mainline tree:
+ *
+ *   offset        size        label                note
+ *   0x00000000    0x00200000  u-boot               read-only
+ *   0x00200000    0x02000000  kernel0              32 MiB, boot slot A
+ *   0x02200000    0x02000000  kernel1              32 MiB, boot slot B  <== target
+ *   0x04200000    0x00600000  others               6 MiB
+ *   0x04800000    0x00400000  parameter tags       4 MiB (MAC likely here)
+ *   0x04c00000    0x00800000  usercfg              8 MiB
+ *   0x05400000    0x00400000  middleware           4 MiB
+ *   0x05800000    0x00400000  wlan                 4 MiB
+ *   0x05c00000    0x00200000  phoneapp             2 MiB
+ *   0x05e00000    0x00200000  phoneapp1            2 MiB
+ *   0x06000000    0x01e00000  osgi                 30 MiB
+ *   0x07e00000    0x01e00000  osgi1                30 MiB
+ *   0x09c00000    0x06360000  plugin_data          ~99 MiB
+ *   0x0ff60000    0x000a0000  GN25L95_datas        640 KiB
+ *   whole flash   0x10000000  (whole flash)
+ *
+ * [MEASURED] factory bad blocks are present; nand_write MUST skip bad blocks:
+ *   0x014c0000, 0x014e0000, 0x02ec0000, 0x08940000, 0x091c0000, 0x091e0000,
+ *   0x0b300000, 0x0b320000, 0x0bb40000, 0x0bb80000, 0x0c000000, 0x0c020000,
+ *   0x0d020000, 0x0d060000
+ *
+ * Because mainline 6.18 has no parallel-NAND DT node for this SoC, the block
+ * below is intentionally disabled. Do NOT re-enable &spifc -- it points at a
+ * controller this board does not have. When the denali driver is ported, add a
+ * proper node here and move the partition table above into it.
+ */
+#if 0
+&spifc {
+	status = "disabled";
+	flash@0 {
+		compatible = "spi-nand";
+		reg = <0>;
+		spi-max-frequency = <50000000>;
+		spi-rx-bus-width = <2>;
+		spi-tx-bus-width = <1>;
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@200000 {
+				label = "kernel1";
+				reg = <0x02200000 0x02000000>;
+				nvmem-layout {
+					compatible = "fixed-layout";
+					#address-cells = <1>;
+					#size-cells = <1>;
+					macaddr_tag_1e: macaddr@1e {
+						compatible = "mac-base";
+						reg = <0x1e 0x6>;
+						#nvmem-cell-cells = <1>;
+					};
+				};
+			};
+
+			partition@1700000 {
+				label = "rootfs";
+				reg = <0x01700000 0x02800000>;	/* obsolete placeholder */
+			};
+		};
+	};
+};
+#endif
