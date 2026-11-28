@@ -192,9 +192,34 @@
 	phy13: ethernet-phy@d { reg = <13>; };
 };
 
-/* ---- UART: keep both enabled so the forced console is not silent ---------- */
+/* ---- UART -----------------------------------------------------------------
+ * REVISION 5 -- 2026-11-27, [MEASURED].  reg = 0x94404000 is CORRECT. Do not
+ * "fix" it. The UART is a ZTE variant, and the kernel already knows:
+ *
+ *   patches-6.18/001-amba-serial-amba-pl011-Bring-back-zx29-UART-support.patch
+ *   selects vendor_zte through arm,primecell-periphid = <0x0018c011>, and
+ *   include/linux/amba/serial.h carries the offset table:
+ *
+ *       ZX_UART011_DR   0x04      ZX_UART011_IBRD  0x24
+ *       ZX_UART011_FR   0x14      ZX_UART011_FBRD  0x28
+ *       ZX_UART011_LCRH 0x30      ZX_UART011_CR    0x34
+ *       ZX_UART011_IFLS 0x38
+ *
+ * Measured on the real board (probe5.py, bare metal, console survived):
+ *     str 'A' -> 0x94404000  no character        (that is the vendor header)
+ *     str 'B' -> 0x94404004  'B' appears         (ZX_UART011_DR)
+ * Register dump at 0x94404000: 0x14=0x110 (FR), 0x24=13, 0x28=36,
+ * 0x30=0x70, 0x34=0x301, 0x38=0x12 -- exactly the ZX layout.
+ * IBRD=13, FBRD=36 => uartclk = 25 MHz.
+ *
+ * So the driver is fine and the kernel's ttyAMA0 writes go to the right place.
+ * (earlycon is a different story: plain "earlycon=pl011,<addr>" uses the stock
+ *  PL011 offsets, so it must be given 0x94404004 to hit DR. See apply-h60g.sh.)
+ * ------------------------------------------------------------------------- */
 &serial0 { status = "okay"; };
-&serial1 { status = "okay"; };
+
+/* UART1 is not wired to anything on H60G. */
+&serial1 { status = "disabled"; };
 
 /* ---- No WiFi on H60G: keep both PCIe controllers off --------------------- */
 &pcie0 { status = "disabled"; };
