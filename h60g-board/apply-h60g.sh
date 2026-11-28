@@ -75,7 +75,7 @@ cp "$HERE/target/base-files/etc/board.d/02_network" \
 # parallel-NAND driver is ported. Use a console-only cmdline; the first boot is
 # an initramfs loaded over TFTP (root comes from the initramfs itself).
 CFG="$TREE/target/linux/sanechips/config-6.18"
-MARK='# H60G: rev6 -- earlyprintk (DEBUG_LL/pl01x) + ATAGS->DTB compat (EXTEND) + earlycon (apply-h60g.sh)'
+MARK='# H60G: rev8 -- UART at 0x94404004 (vendor PL011 shifted +4) + earlycon (apply-h60g.sh)'
 # ---------------------------------------------------------------------------
 # REV4 (2026-11-27) -- why the kernel was TOTALLY silent after "Starting kernel"
 #
@@ -136,24 +136,84 @@ sed -i -e "\|^$MARK\$|d" \
 #   ARM_ATAG_DTB_COMPAT_CMDLINE_{FROM_BOOTLOADER,EXTEND}. If neither is pinned,
 #   the non-interactive `syncconfig` step stops at "choice[1-2?]:" and the whole
 #   target/linux build dies with Error 1. It must always be set explicitly.
+# NOTE (REV7): ARM_ATAG_DTB_COMPAT is NOT set any more.
+#   It opens the choice ARM_ATAG_DTB_COMPAT_CMDLINE_{FROM_BOOTLOADER,EXTEND},
+#   and even with EXTEND pinned kconfig still stops at "choice[1-2?]:" and dies
+#   with Error 1 in the non-interactive syncconfig (confirmed twice: REV4, REV6).
+#   It is also unnecessary: U-Boot prints "Booting using the fdt blob" and hands
+#   the DTB over in r2, so nothing has to be merged from ATAGS.
+#
+# NOTE (REV7): DEBUG_LL / EARLY_PRINTK removed as well.
+#   earlyprintk (printascii) after the MMU is on needs the debug UART statically
+#   mapped by .map_io = debug_ll_io_init in the machine descriptor. The sanechips
+#   dt-machine has no such hook, so earlyprintk would fault instead of printing.
+#   Keep the config minimal: earlycon=pl011,<mmio> is the reliable channel.
+# NOTE (REV8, 2026-11-27) -- THE REAL ROOT CAUSE OF THE TOTAL SILENCE.
+#
+# Everything above (ATAGS, reserved-memory, load address, EARLYCON on/off) was
+# a red herring. Measured on the actual board from U-Boot with a hand-assembled
+# bare-metal stub (probe5.py, `go 0x43000080`, console stayed alive):
+#
+#     strb/str 'A' -> 0x94404000    ->  NOTHING appears on the wire
+#     strb/str 'B' -> 0x94404004    ->  'B' appears
+#
+# i.e. this SoC's UART is a modified PrimeCell whose whole register block is
+# 4 bytes higher than stock PL011 (the SoC dtsi even declares periphid
+# 0x0018c011 instead of the stock 0x00141011). Measured map:
+#
+#     0x94404000  01060000  vendor header register, NOT DR
+#     0x94404004  00000030  DR
+#     0x94404028  00000024  IBRD = 36
+#     0x9440402c  00000000  FBRD = 0
+#     0x94404030  00000070  LCR_H = 0x70   (8N1, FIFO on)
+#     0x94404034  00000301  CR    = 0x301  (UARTEN|TXE|RXE)
+#     0x94404038  00000012  IFLS
+#
+# IBRD=36, FBRD=0 => uartclk = 36*16*115200 = 66355200 Hz.
+# So the PrimeCell base is 0x94404004 -- and with that base every stock
+# offset is correct (DR +0x00, LCR_H +0x2c, CR +0x30, IFLS +0x34).
+#
+# With the old 0x94404000 every single character -- earlycon AND ttyAMA0 --
+# was written into the vendor header register. The kernel could be running
+# perfectly and we would still see zero bytes. That is why every earlier
+# experiment looked like a hang.
+#
+# The board DTS now declares reg = <0x94404004>, so earlycon must use the
+# same address, otherwise earlycon itself reproduces the bug.
 printf '%s\n' "$MARK" \
 	'CONFIG_CMDLINE_BOOL=y' \
-	'CONFIG_CMDLINE="console=ttyAMA0,115200n8 earlycon=pl011,0x94404000 earlyprintk keep_bootcon"' \
+	'CONFIG_CMDLINE="console=ttyAMA0,115200n8 earlycon=pl011,0x94404004 keep_bootcon"' \
 	'CONFIG_CMDLINE_FORCE=y' \
 	'CONFIG_SERIAL_EARLYCON=y' \
-	'CONFIG_SERIAL_AMBA_PL011_EARLYCON=y' \
-	'CONFIG_ARM_ATAG_DTB_COMPAT=y' \
-	'CONFIG_ARM_ATAG_DTB_COMPAT_CMDLINE_EXTEND=y' \
-	'CONFIG_DEBUG_KERNEL=y' \
-	'CONFIG_DEBUG_LL=y' \
-	'CONFIG_DEBUG_LL_UART_PL01X=y' \
-	'CONFIG_DEBUG_UART_PHYS=0x94404000' \
-	'CONFIG_DEBUG_UART_VIRT=0xfee04000' \
-	'CONFIG_EARLY_PRINTK=y' >> "$CFG"
-echo "cmdline: console + earlycon=pl011,0x94404000 + earlyprintk (DEBUG_LL/pl01x)"
+	'CONFIG_SERIAL_AMBA_PL011_EARLYCON=y' >> "$CFG"
+echo "cmdline: console + earlycon=pl011,0x94404004 (vendor PL011 shifted +4, REV8)"
 echo "kernel is zImage+appended-DTB, ih_load=0x48008000 (AUTO_ZRELADDR unpacks there)"
 
-# --- 5. select only the H60G profile in seed config -------------------------
+# --- 5. bring-up driver overlay (REV31) -------------------------------------
+# The stock zx279128s driver leaves the DMA engine idle on the H60G (ZX279127S):
+# tx_submitted grows, tx_completed stays 0, the BMU free list runs dry and no
+# interrupt ever fires.  There is no /dev/mem on this target, so the only way
+# to find the missing register is to poke it from the driver.
+#
+# This overlay adds, to target/linux/sanechips/files/.../zte/zx279128s-main.c:
+#   * dma_state now dumps the DMA window up to 0x1c0 (the boot loader leaves a
+#     block of queue configuration at 0x13c..0x1ac that the driver never writes)
+#   * dma_state also dumps the first 8 TX and 4 RX descriptors, so it is visible
+#     whether the hardware consumed the rings
+#   * a "reg" debugfs file:  echo "r 350060" > reg ; cat reg
+#                            echo "w 350064 1" > reg
+# Delete target/drivers/zx279128s-main.c to build the pristine driver again.
+DRV_SRC="$HERE/target/drivers/zx279128s-main.c"
+DRV_DST="$TREE/target/linux/sanechips/files/drivers/net/ethernet/zte"
+if [ -f "$DRV_SRC" ]; then
+	[ -d "$DRV_DST" ] || { echo "driver dir missing: $DRV_DST" >&2; exit 1; }
+	cp "$DRV_SRC" "$DRV_DST/zx279128s-main.c"
+	echo "driver: bring-up overlay applied (dma_state 0x1c0 + descriptor dump + reg poke)"
+else
+	echo "driver: pristine (no overlay in h60g-board/target/drivers/)"
+fi
+
+# --- 6. select only the H60G profile in seed config -------------------------
 # Leave E2631 default intact; user selects zte_h60g in menuconfig. We only make
 # sure the WiFi kmods pulled by E2631's DEVICE_PACKAGES don't leak in -- our
 # Makefile.h60g has its own DEVICE_PACKAGES without them.
